@@ -1,0 +1,11 @@
+{
+  "name": "learn-dark",
+  "background": "#1a1b26",
+  "foreground": "#c0caf5",
+  "accent": "#7aa2f7",
+  "muted": "#565f89",
+  "userTurn": "#9ece6a",
+  "assistantTurn": "#c0caf5",
+  "toolCall": "#bb9af7",
+  "error": "#f7768e"
+}
