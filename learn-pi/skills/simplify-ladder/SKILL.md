@@ -3,6 +3,8 @@ name: simplify-ladder
 description: When the user replies with `?` or a 1–2 character confusion signal, drop one subscore step and rewrite the previous assistant turn at a lower rung without adding new content.
 when_to_use: Trigger whenever the user's latest message is `?`, `??`, `huh`, or any reply ≤2 chars that is not an affirmative.
 tools: [zpd.get, zpd.adjust]
+learning_event: none
+learning_event_rationale: Difficulty adjustment, not a pedagogical mode. Orthogonal to LE class.
 ---
 
 The user signaled confusion. You are NOT introducing new content — you are

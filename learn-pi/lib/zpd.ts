@@ -1,4 +1,10 @@
+// GIFT: Learner Module — knowledge state (ZPD rung + subscore)
+//
 // ZPD state: rung + subscore, stored as YAML frontmatter in zpd/<lang>.md.
+//
+// Rung controls *difficulty of presentation*. It is orthogonal to the KLI
+// Learning Event class (memory_fluency / induction / sense_making), which
+// controls *pedagogical mode*. A turn at L2 can target any LE class.
 
 import { Vault } from "./vault.ts";
 

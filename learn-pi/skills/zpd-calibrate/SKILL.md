@@ -3,6 +3,8 @@ name: zpd-calibrate
 description: Before composing any assistant utterance in a learning session, pick the target rung and style constraints from current ZPD state.
 when_to_use: Called by learn-loop on onAssistantTurnPreSend, and whenever you are about to speak target-language content.
 tools: [zpd.get]
+learning_event: none
+learning_event_rationale: Difficulty adjustment, not a pedagogical mode. Orthogonal to LE class.
 ---
 
 Your job: translate the current ZPD state into a concrete style directive the

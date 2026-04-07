@@ -3,6 +3,8 @@ name: concept-commit
 description: HARD-GATED. Stage a proposed belief triple, paraphrase it back in the base language for yes/no confirmation, and only commit after an unambiguous base-language affirmative.
 when_to_use: Trigger when you believe you have learned a new fact about the user from this or a very recent turn.
 tools: [concepts.propose, concepts.commit, vault.write]
+learning_event: none
+learning_event_rationale: Governance gate enforcing base-language confirmation, not a pedagogical move.
 ---
 
 This is the ONLY path that may call `concepts.commit`. The two-map rule

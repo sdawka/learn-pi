@@ -1,5 +1,11 @@
+// GIFT: Learner Module — user beliefs (RDF triples)
+//
 // concepts.db — RDF-ish triple store with a base-language-confirmation gate
 // on commit. The gate is the enforcement point for the two-map rule.
+//
+// Stores beliefs *about the user* (interests, routines, relationships), NOT
+// beliefs the user is being taught. Knowledge-state about the target language
+// lives in vocab/grammar frontmatter + `lib/mastery.ts`.
 //
 // NOTE: uses better-sqlite3 (NOT child_process). The `runDdl` indirection below
 // avoids a literal `.exec(` token that some security linters flag.

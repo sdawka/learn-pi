@@ -3,6 +3,7 @@ name: recall-weave
 description: Pull SM-2 due items and weave 1–2 of them invisibly into the next assistant turn on the current topic, without quizzing.
 when_to_use: Trigger when session due-quota > 0 and the conversation is flowing naturally on a topic.
 tools: [queue.due]
+learning_event: memory_fluency
 ---
 
 Your job: make spaced-recall practice *happen without the user noticing*.

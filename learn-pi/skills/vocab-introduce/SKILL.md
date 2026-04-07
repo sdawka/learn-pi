@@ -3,6 +3,7 @@ name: vocab-introduce
 description: When about to use a target-language lemma not yet in the vocab map, register it with an initial SM-2 state.
 when_to_use: Trigger right before composing an assistant turn that will use a new target-language lemma.
 tools: [vocab.introduce, vault.read]
+learning_event: induction
 ---
 
 Steps:
