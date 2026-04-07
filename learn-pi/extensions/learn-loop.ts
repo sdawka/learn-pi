@@ -1,3 +1,5 @@
+// GIFT: Pedagogical Module (turn planner) + Sensor Module (signal detection on user turns)
+//
 // learn-loop.ts — main pi-mono lifecycle extension for learn-pi.
 //
 // Pi-mono loads this via jiti (no build step). Default export is a function
@@ -6,6 +8,10 @@
 // with TypeBox schemas.
 //
 // Events used: session_start, before_agent_start, input, agent_end.
+//
+// KLI overlay: turns are tagged with an `le_class` (memory_fluency / induction
+// / sense_making). New vocab entries default to `kc_type: "fact"`. See
+// `docs/plan.md` "Learning science frame" for the full taxonomy.
 
 import path from "node:path";
 import { simpleGit } from "simple-git";
@@ -15,6 +21,11 @@ import { ConceptsDb } from "../lib/concepts-db.ts";
 import { regenerateDueQueue } from "../lib/spaced-queue.ts";
 import { getZpd, adjustZpd } from "../lib/zpd.ts";
 import { initSm2, gradeSm2, type Sm2State } from "../lib/sm2.ts";
+import {
+  defaultMastery,
+  gradeProbe,
+  type MasteryState,
+} from "../lib/mastery.ts";
 
 // --- minimal ambient types for the pi-mono API we use ---------------------
 // We code against the documented shape; jiti resolves the real types at
@@ -42,6 +53,8 @@ type ExtensionAPI = {
 };
 // --------------------------------------------------------------------------
 
+type LeClass = "memory_fluency" | "induction" | "sense_making";
+
 type SessionState = {
   vault: Vault;
   dbPath: string;
@@ -50,6 +63,11 @@ type SessionState = {
   turnsSinceProbe: number;
   knownLemmas: Set<string>;
   stagedConceptId?: number;
+  // KLI Learning Event class the next assistant turn is targeting.
+  // TODO: the agent prompt should explicitly declare this per turn via the
+  // `le_declare` tool. Until then, default to memory_fluency (the pre-overlay
+  // behavior — spaced weave + SM-2 grading).
+  leClass: LeClass;
 };
 
 function loadKnownLemmas(vault: Vault, lang: string): Set<string> {
@@ -104,6 +122,7 @@ export default function learnLoop(pi: ExtensionAPI): void {
       itemsTouched: new Set(),
       turnsSinceProbe: 99,
       knownLemmas: loadKnownLemmas(vault, lang),
+      leClass: "memory_fluency",
     };
     pi.appendEntry("learn-pi-session", { lang, started: new Date().toISOString() });
   });
@@ -158,10 +177,16 @@ export default function learnLoop(pi: ExtensionAPI): void {
 
   pi.on("agent_end", async (_event, _ctx) => {
     if (!state) return;
+    const zpd = getZpd(state.vault, state.lang);
     pi.appendEntry("learn-pi-turn", {
       at: new Date().toISOString(),
       items_touched: [...state.itemsTouched],
+      rung: zpd.rung,
+      subscore: zpd.subscore,
+      le_class: state.leClass,
     });
+    // Reset LE for the next turn; the agent must re-declare via `le_declare`.
+    state.leClass = "memory_fluency";
     try {
       const git = simpleGit(state.vault.root);
       await git.add(".");
@@ -279,7 +304,15 @@ export default function learnLoop(pi: ExtensionAPI): void {
       const sm2 = initSm2();
       s.vault.writeFrontmatter(
         rel,
-        { lemma, lang, gloss, sm2, last_seen: new Date().toISOString() },
+        {
+          lemma,
+          lang,
+          gloss,
+          kc_type: "fact",
+          sm2,
+          mastery: defaultMastery(),
+          last_seen: new Date().toISOString(),
+        },
         `\n## examples\n- ${example ?? ""}\n`,
       );
       s.knownLemmas.add(lemma.toLowerCase());
@@ -333,6 +366,73 @@ export default function learnLoop(pi: ExtensionAPI): void {
     }),
     async execute(_id, { lang, delta, reason }) {
       return jsonResult(adjustZpd(requireState().vault, lang, delta, reason));
+    },
+  });
+
+  pi.registerTool({
+    name: "le_declare",
+    label: "le.declare",
+    description:
+      "Declare the KLI Learning Event class the next assistant turn is targeting. One of: memory_fluency, induction, sense_making. Logged to session metadata at turn end.",
+    parameters: Type.Object({
+      le_class: Type.Union([
+        Type.Literal("memory_fluency"),
+        Type.Literal("induction"),
+        Type.Literal("sense_making"),
+      ]),
+    }),
+    async execute(_id, { le_class }) {
+      requireState().leClass = le_class as LeClass;
+      return textResult(`le_class=${le_class}`);
+    },
+  });
+
+  pi.registerTool({
+    name: "mastery_get",
+    label: "mastery.get",
+    description:
+      "Read mastery state for a lemma (probe-updated, distinct from SM-2 ease).",
+    parameters: Type.Object({ lemma: Type.String() }),
+    async execute(_id, { lemma }) {
+      const s = requireState();
+      const rel = `vocab/${s.lang}/${lemma}.md`;
+      if (!s.vault.exists(rel)) return textResult(`no such lemma: ${lemma}`);
+      const { data } = s.vault.readFrontmatter<{ mastery?: MasteryState }>(rel);
+      return jsonResult({ lemma, mastery: data.mastery ?? defaultMastery() });
+    },
+  });
+
+  pi.registerTool({
+    name: "mastery_probe",
+    label: "mastery.probe",
+    description:
+      "Record the outcome of an unscaffolded probe on a lemma. Updates mastery state only — does NOT touch SM-2 ease. Quality 0–5 (0 = blank, 5 = cold spontaneous production).",
+    parameters: Type.Object({
+      lemma: Type.String(),
+      quality: Type.Number(),
+    }),
+    async execute(_id, { lemma, quality }) {
+      const s = requireState();
+      const rel = `vocab/${s.lang}/${lemma}.md`;
+      if (!s.vault.exists(rel)) return textResult(`no such lemma: ${lemma}`);
+      const { data, body } = s.vault.readFrontmatter<{
+        mastery?: MasteryState;
+      }>(rel);
+      const prior = data.mastery ?? defaultMastery();
+      const q = Math.max(0, Math.min(5, Math.round(quality))) as
+        | 0
+        | 1
+        | 2
+        | 3
+        | 4
+        | 5;
+      const next = gradeProbe(prior, q);
+      s.vault.writeFrontmatter(
+        rel,
+        { ...data, mastery: next },
+        body,
+      );
+      return jsonResult({ lemma, mastery: next });
     },
   });
 

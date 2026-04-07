@@ -1,5 +1,11 @@
+// GIFT: Pedagogical Module — memory_fluency LE (SM-2 grading, pure)
+//
 // Classic SM-2 (SuperMemo 2) — https://super-memory.com/english/ol/sm2.htm
 // Kept deliberately tiny: ~30 lines, no dependencies.
+//
+// Scoped to the KLI memory_fluency Learning Event only. SM-2 `ease` measures
+// scaffolded recall; it is NOT a mastery signal. For transfer measurement see
+// `lib/mastery.ts` and the probe path in `spaced-queue.ts`.
 
 export type Sm2State = {
   ease: number;        // E-factor, min 1.3
