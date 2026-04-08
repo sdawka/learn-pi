@@ -135,3 +135,11 @@ The `concept-commit` skill is the ONLY path that calls `concepts.commit`, and it
 9. Scheduled ping — arrives in active window, weaves at least one due item.
 10. After a few sessions, run `npx tsx learn-pi/scripts/learning-report.ts ~/LearnVault` — confirm per-KC buckets exist and are grouped by `kc_type`, and that LE mix is logged per session.
 11. Force a probe on a high-ease lemma via `mastery.probe` — confirm the `mastery` field updates independently of SM-2 state and a divergence shows up in the probe-vs-practice gap section of the report.
+
+## Status (as of activation PR)
+
+- ✅ **KLI vocabulary** (PR #1, merged): `kc_type`, `le_class`, mastery split, GIFT module headers, skill `learning_event` tagging.
+- ✅ **Pedagogy activation** (this PR): `le.declare` mandatory per turn (logged as `(undeclared)` if skipped), probe loop wired with throttle, `vocab.introduce` takes explicit `kc_type` + `topics`, new `grammar.introduce` tool defaults to `principle`, opportunities recorded per turn.
+- ✅ **Measurement** (this PR): learning curves bucketed by `kc_type`, per-topic aggregation via `aggregateByTopic`, vitest unit tests for `mastery.ts`, backfill script for legacy vault items.
+- ✅ **Documentation** (this PR): repo-root `README.md` (front door, current state, future state, working principles), `docs/PRINCIPLES.md` (constitution).
+- 🔜 **Open follow-ups**: Bayesian Knowledge Tracing on the opportunity log, generative probes, cross-lingual interference detection, authoring tool, curves auto-promoting KCs to different LE classes when flat.

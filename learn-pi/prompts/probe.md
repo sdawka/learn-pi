@@ -4,6 +4,8 @@ description: Probe a concept node to expand the belief graph
 
 Probe the concept subject `$1`.
 
+This command probes the **concept/belief graph** (who-the-user-is). It is distinct from KLI mastery probes, which probe the **vocabulary/grammar map** (what-the-user-can-recall) via `mastery.probe`. The two paths share the word "probe" but write to different maps.
+
 1. Call `concepts.query({subject: "$1"})` to see what is already known about this subject in the belief graph.
 2. Invoke the `concept-probe` skill scoped to `$1`, using the query result as seed context so you don't re-ask what's already answered.
 

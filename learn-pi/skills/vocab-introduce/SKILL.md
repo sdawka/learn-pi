@@ -21,5 +21,13 @@ Steps:
      drop back to a lower rung or defer the extras.
    - Use the dictionary lemma (infinitive for verbs, singular masculine for
      nouns where applicable), not the inflected form.
-4. After introducing, proceed with the turn. The main loop will grade touched
+4. **Always pass `kc_type` and `topics` explicitly.** The decision rubric:
+   - Single-meaning concrete word (`caballo`, `mesa`) → `kc_type: fact`
+   - Inflectable verb or pronoun set (`ser`, `tener`) → `kc_type: skill`
+   - Anything written to `grammar/` (rules with rationale) → use the
+     `grammar.introduce` tool instead, which defaults `kc_type: principle`
+   - `topics` is an optional `string[]` enabling per-topic mastery aggregation.
+     Use lowercase snake_case: `["copula"]`, `["ser_estar", "verbs"]`. Tag
+     liberally — the report rolls items up to topics for cleaner diagnostics.
+5. After introducing, proceed with the turn. The main loop will grade touched
    items at turn/session end.

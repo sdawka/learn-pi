@@ -54,6 +54,20 @@ type ExtensionAPI = {
 // --------------------------------------------------------------------------
 
 type LeClass = "memory_fluency" | "induction" | "sense_making";
+type KcType = "fact" | "skill" | "principle";
+
+// Per-turn opportunity log entry — see plan §"Shared data contract".
+// Stream A (this file) is the producer; Stream B (learning-report.ts)
+// duplicates this type and must stay in sync.
+type Opportunity = {
+  lemma: string;
+  kind: "vocab" | "grammar";
+  kc_type: KcType | null;
+  topic: string | null;
+  grade: 0 | 1 | 2 | 3 | 4 | 5 | null;
+  probe: boolean;
+  mastery_quality: 0 | 1 | 2 | 3 | 4 | 5 | null;
+};
 
 type SessionState = {
   vault: Vault;
@@ -61,18 +75,45 @@ type SessionState = {
   lang: string;
   itemsTouched: Set<string>;
   turnsSinceProbe: number;
+  turnsSinceMasteryProbe: number;
   knownLemmas: Set<string>;
   stagedConceptId?: number;
-  // KLI Learning Event class the next assistant turn is targeting.
-  // TODO: the agent prompt should explicitly declare this per turn via the
-  // `le_declare` tool. Until then, default to memory_fluency (the pre-overlay
-  // behavior — spaced weave + SM-2 grading).
-  leClass: LeClass;
+  // KLI Learning Event class the agent declared for the *current* turn via
+  // `le.declare`. null = not declared yet (logged as "(undeclared)" so the
+  // report can surface the bug instead of silently defaulting).
+  leClass: LeClass | null;
+  // Opportunities recorded by tool calls during the current turn. Reset on
+  // before_agent_start, flushed in agent_end.
+  turnOpportunities: Opportunity[];
 };
 
 function loadKnownLemmas(vault: Vault, lang: string): Set<string> {
   const files = vault.list(`vocab/${lang}`).filter((p) => p.endsWith(".md"));
   return new Set(files.map((f) => path.basename(f, ".md").toLowerCase()));
+}
+
+// Look up KC type + first topic for a lemma. Searches vocab/ first, then
+// grammar/. Returns null if the lemma file doesn't exist (avoids crashing
+// the turn-end log on a stale itemsTouched entry).
+function readItemMeta(
+  vault: Vault,
+  lang: string,
+  lemma: string,
+): { kind: "vocab" | "grammar"; kc_type?: KcType; topic: string | null } | null {
+  for (const kind of ["vocab", "grammar"] as const) {
+    const rel = `${kind}/${lang}/${lemma}.md`;
+    if (!vault.exists(rel)) continue;
+    const { data } = vault.readFrontmatter<{
+      kc_type?: KcType;
+      topics?: string[];
+    }>(rel);
+    return {
+      kind,
+      kc_type: data.kc_type,
+      topic: data.topics?.[0] ?? null,
+    };
+  }
+  return null;
 }
 
 function detectConfusion(message: string): boolean {
@@ -121,17 +162,28 @@ export default function learnLoop(pi: ExtensionAPI): void {
       lang,
       itemsTouched: new Set(),
       turnsSinceProbe: 99,
+      turnsSinceMasteryProbe: 99,
       knownLemmas: loadKnownLemmas(vault, lang),
-      leClass: "memory_fluency",
+      leClass: null,
+      turnOpportunities: [],
     };
     pi.appendEntry("learn-pi-session", { lang, started: new Date().toISOString() });
   });
 
   pi.on("before_agent_start", async (event: { systemPrompt: string }, _ctx) => {
     if (!state) return;
+    // Lazy reset for the new turn — agent must call le.declare before composing.
+    state.leClass = null;
+    state.turnOpportunities = [];
+    state.turnsSinceProbe += 1;
+    state.turnsSinceMasteryProbe += 1;
+
     const { vault, lang, dbPath } = state;
     const zpd = getZpd(vault, lang);
     const due = await regenerateDueQueue(vault, lang);
+    const reviewItems = due.filter((d) => d.lane === "review");
+    const probeItems = due.filter((d) => d.lane === "probe");
+    const probeAllowed = state.turnsSinceMasteryProbe >= 4;
 
     const db = new ConceptsDb(dbPath);
     const counts: Record<string, number> = {};
@@ -145,9 +197,22 @@ export default function learnLoop(pi: ExtensionAPI): void {
     const directive = [
       `# learn-pi directive`,
       `lang=${lang}  rung=${zpd.rung}  subscore=${zpd.subscore}`,
-      `due_quota=${due.length}${due.length ? ` — weave 1–2 of [${due.slice(0, 5).map((d) => d.lemma).join(", ")}] invisibly` : ""}`,
+      `due_quota=${reviewItems.length}${reviewItems.length ? ` — weave 1–2 of [${reviewItems.slice(0, 5).map((d) => d.lemma).join(", ")}] invisibly` : ""}`,
+      probeItems.length && probeAllowed
+        ? `probe_quota=${probeItems.length} — within this turn or the next, run ONE of [${probeItems.map((d) => d.lemma).join(", ")}] as a cold-retrieval probe in the base language. Do NOT scaffold. Then call mastery.probe(lemma, quality 0–5). Probes are SEPARATE turns from weaving — never mix the two in one utterance.`
+        : probeItems.length
+          ? `probe_quota=${probeItems.length} (cooldown — last probe too recent; defer)`
+          : `probe_quota=0`,
       `top_subjects=[${topSubjects.join(", ") || "(none)"}]`,
-      `Before every assistant utterance, consult skill "zpd-calibrate" for the style directive.`,
+      ``,
+      `## Mandatory pre-turn ritual`,
+      `1. Consult skill "zpd-calibrate" for the style directive.`,
+      `2. Call le.declare exactly once with one of memory_fluency | induction | sense_making. Match the dominant KC type the turn engages:`,
+      `   - memory_fluency → fact retrieval (use "recall-weave" to weave due items)`,
+      `   - induction      → skills via varied examples + contrast (surface 2 contrasting sentences, ask the learner to produce a third)`,
+      `   - sense_making   → principles via rationale (ask the learner to explain *why* before confirming)`,
+      `3. If you skip le.declare the turn is logged as "(undeclared)" and the report flags it.`,
+      ``,
       `If the user reply was "?" or similar, use skill "simplify-ladder".`,
       `Two-map rule: ANY write to the concept graph MUST be confirmed by the user IN THE BASE LANGUAGE via skill "concept-commit". Refuse to call concepts.commit otherwise — it will throw.`,
     ].join("\n");
@@ -178,15 +243,35 @@ export default function learnLoop(pi: ExtensionAPI): void {
   pi.on("agent_end", async (_event, _ctx) => {
     if (!state) return;
     const zpd = getZpd(state.vault, state.lang);
+
+    // Add passive opportunities for items_touched not already represented
+    // (i.e., touched but not graded or probed this turn).
+    const recordedLemmas = new Set(state.turnOpportunities.map((o) => o.lemma));
+    for (const lemma of state.itemsTouched) {
+      if (recordedLemmas.has(lemma)) continue;
+      const meta = readItemMeta(state.vault, state.lang, lemma);
+      if (!meta) continue;
+      state.turnOpportunities.push({
+        lemma,
+        kind: meta.kind,
+        kc_type: meta.kc_type ?? null,
+        topic: meta.topic,
+        grade: null,
+        probe: false,
+        mastery_quality: null,
+      });
+    }
+
     pi.appendEntry("learn-pi-turn", {
       at: new Date().toISOString(),
-      items_touched: [...state.itemsTouched],
       rung: zpd.rung,
       subscore: zpd.subscore,
       le_class: state.leClass,
+      opportunities: state.turnOpportunities,
     });
-    // Reset LE for the next turn; the agent must re-declare via `le_declare`.
-    state.leClass = "memory_fluency";
+    // Clear per-turn state. Next turn re-declares via le.declare on entry.
+    state.itemsTouched.clear();
+    state.turnOpportunities = [];
     try {
       const git = simpleGit(state.vault.root);
       await git.add(".");
@@ -290,14 +375,23 @@ export default function learnLoop(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "vocab_introduce",
     label: "vocab.introduce",
-    description: "Register a new target-language lemma with initial SM-2 state.",
+    description:
+      "Register a new target-language lemma with initial SM-2 state. Pass kc_type explicitly: single-meaning word → fact, inflectable verb/pronoun set → skill. Pass topics to enable per-topic mastery aggregation.",
     parameters: Type.Object({
       lemma: Type.String(),
       lang: Type.String(),
       gloss: Type.String(),
       example: Type.Optional(Type.String()),
+      kc_type: Type.Optional(
+        Type.Union([
+          Type.Literal("fact"),
+          Type.Literal("skill"),
+          Type.Literal("principle"),
+        ]),
+      ),
+      topics: Type.Optional(Type.Array(Type.String())),
     }),
-    async execute(_id, { lemma, lang, gloss, example }) {
+    async execute(_id, { lemma, lang, gloss, example, kc_type, topics }) {
       const s = requireState();
       const rel = `vocab/${lang}/${lemma}.md`;
       if (s.vault.exists(rel)) return textResult(`already known: ${lemma}`);
@@ -308,7 +402,8 @@ export default function learnLoop(pi: ExtensionAPI): void {
           lemma,
           lang,
           gloss,
-          kc_type: "fact",
+          kc_type: kc_type ?? "fact",
+          topics: topics ?? [],
           sm2,
           mastery: defaultMastery(),
           last_seen: new Date().toISOString(),
@@ -316,7 +411,47 @@ export default function learnLoop(pi: ExtensionAPI): void {
         `\n## examples\n- ${example ?? ""}\n`,
       );
       s.knownLemmas.add(lemma.toLowerCase());
-      return textResult(`introduced ${lemma}`);
+      return textResult(`introduced ${lemma} (kc_type=${kc_type ?? "fact"})`);
+    },
+  });
+
+  pi.registerTool({
+    name: "grammar_introduce",
+    label: "grammar.introduce",
+    description:
+      "Register a new grammar item (rule/pattern with rationale). Defaults kc_type to principle. Pass topics to enable aggregation. Mirror of vocab.introduce but writes under grammar/<lang>/.",
+    parameters: Type.Object({
+      lemma: Type.String(),
+      lang: Type.String(),
+      gloss: Type.String(),
+      example: Type.Optional(Type.String()),
+      kc_type: Type.Optional(
+        Type.Union([Type.Literal("skill"), Type.Literal("principle")]),
+      ),
+      topics: Type.Optional(Type.Array(Type.String())),
+    }),
+    async execute(_id, { lemma, lang, gloss, example, kc_type, topics }) {
+      const s = requireState();
+      const rel = `grammar/${lang}/${lemma}.md`;
+      if (s.vault.exists(rel)) return textResult(`already known: ${lemma}`);
+      const sm2 = initSm2();
+      s.vault.writeFrontmatter(
+        rel,
+        {
+          lemma,
+          lang,
+          gloss,
+          kc_type: kc_type ?? "principle",
+          topics: topics ?? [],
+          sm2,
+          mastery: defaultMastery(),
+          last_seen: new Date().toISOString(),
+        },
+        `\n## examples\n- ${example ?? ""}\n`,
+      );
+      return textResult(
+        `introduced grammar ${lemma} (kc_type=${kc_type ?? "principle"})`,
+      );
     },
   });
 
@@ -332,7 +467,11 @@ export default function learnLoop(pi: ExtensionAPI): void {
       const s = requireState();
       const rel = `vocab/${s.lang}/${lemma}.md`;
       if (!s.vault.exists(rel)) return textResult(`no such lemma: ${lemma}`);
-      const { data, body } = s.vault.readFrontmatter<{ sm2?: Sm2State }>(rel);
+      const { data, body } = s.vault.readFrontmatter<{
+        sm2?: Sm2State;
+        kc_type?: KcType;
+        topics?: string[];
+      }>(rel);
       const prior = data.sm2 ?? initSm2();
       const q = Math.max(0, Math.min(5, Math.round(quality))) as 0 | 1 | 2 | 3 | 4 | 5;
       const next = gradeSm2(prior, q);
@@ -341,6 +480,16 @@ export default function learnLoop(pi: ExtensionAPI): void {
         { ...data, sm2: next, last_seen: new Date().toISOString() },
         body,
       );
+      // Record an opportunity for the per-turn log.
+      s.turnOpportunities.push({
+        lemma,
+        kind: "vocab",
+        kc_type: data.kc_type ?? null,
+        topic: data.topics?.[0] ?? null,
+        grade: q,
+        probe: false,
+        mastery_quality: null,
+      });
       return jsonResult({ lemma, sm2: next });
     },
   });
@@ -417,6 +566,8 @@ export default function learnLoop(pi: ExtensionAPI): void {
       if (!s.vault.exists(rel)) return textResult(`no such lemma: ${lemma}`);
       const { data, body } = s.vault.readFrontmatter<{
         mastery?: MasteryState;
+        kc_type?: KcType;
+        topics?: string[];
       }>(rel);
       const prior = data.mastery ?? defaultMastery();
       const q = Math.max(0, Math.min(5, Math.round(quality))) as
@@ -432,6 +583,17 @@ export default function learnLoop(pi: ExtensionAPI): void {
         { ...data, mastery: next },
         body,
       );
+      // Record an unscaffolded probe opportunity. Reset the throttle.
+      s.turnOpportunities.push({
+        lemma,
+        kind: "vocab",
+        kc_type: data.kc_type ?? null,
+        topic: data.topics?.[0] ?? null,
+        grade: null,
+        probe: true,
+        mastery_quality: q,
+      });
+      s.turnsSinceMasteryProbe = 0;
       return jsonResult({ lemma, mastery: next });
     },
   });

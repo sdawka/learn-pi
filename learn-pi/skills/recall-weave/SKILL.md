@@ -11,7 +11,10 @@ Your job: make spaced-recall practice *happen without the user noticing*.
 Steps:
 
 1. Call `queue.due(lang, 5)` to get up to five due items (lemmas or grammar
-   points) sorted by urgency.
+   points) sorted by urgency. **Filter to `lane === "review"` items only.**
+   Probe-lane items (`lane === "probe"`) are mastery-stale and must be handled
+   in a separate cold-retrieval probe turn via `mastery.probe`, not woven —
+   weaving a probe-lane item contaminates the unscaffolded measurement.
 2. Score each by topic-fit against the current conversation topic. Pick **1 or
    2** items — never more — whose meaning plausibly belongs in the next turn.
 3. Compose the next assistant turn at the current rung (use the directive from
