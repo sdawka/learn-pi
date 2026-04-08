@@ -75,6 +75,7 @@ The constitution. When there's a design dispute in this repo, this is what we po
 - Learning curves can be flat. A flat curve is a *bad* shape — it tells us the LE class is mismatched. This is the report's most actionable signal.
 - The LE mix counts an `(undeclared)` bucket separately from declared classes. If the mix shows 100% undeclared, the agent is broken — the directive isn't landing. We can see that.
 - `aggregateByTopic` excludes items without `topics:` set, surfacing in the report as "no items have topics yet — tag items to enable per-topic measurement". The absence is visible.
+- `learn-pi/lib/cost.ts` computes cost-per-mastered-KC (total spend divided by items with `mastery.n_probes > 0 AND mastery.score >= 0.7`). This is the rare metric that can go *down* over time as the system gets more efficient and *up* when pedagogy regresses or scope creeps. Rising = we're paying more to learn less; falling = we're getting more efficient. Exactly the falsifiability shape this principle demands.
 
 **Anti-pattern.** "Total lemmas introduced" as a measurement of progress. Adding more items always goes up. It says nothing about learning. If we want to count items, count items the learner has demonstrated mastery on under unscaffolded probe — that number can go *down* when items decay, which is exactly what makes it a measurement.
 

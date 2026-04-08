@@ -18,6 +18,13 @@ import {
   type MasteryState,
   type TopicMastery,
 } from "../lib/mastery.ts";
+import {
+  costByDay,
+  costByLeClass,
+  costPerMasteredKc,
+  sumUsage,
+  type TurnUsage,
+} from "../lib/cost.ts";
 
 type KcType = "fact" | "skill" | "principle";
 type LeClass = "memory_fluency" | "induction" | "sense_making";
@@ -46,6 +53,7 @@ type TurnEntry = {
   subscore?: number;
   le_class?: LeClass | null;
   opportunities?: Opportunity[];
+  usage?: TurnUsage | null;
   // Legacy shape from PR #1.
   items_touched?: string[];
 };
@@ -296,6 +304,85 @@ function formatCurves(
   return rows.join("\n");
 }
 
+function formatCostSection(
+  turns: TurnEntry[],
+  items: ReturnType<typeof walkItems>,
+): string {
+  // Normalize TurnEntry[] into the shape cost.ts helpers expect.
+  const normalized = turns.map((t) => ({
+    at: t.at ?? "",
+    le_class: t.le_class ?? null,
+    usage: t.usage ?? null,
+  }));
+  const withUsage = normalized.filter((t) => t.usage !== null);
+
+  if (withUsage.length === 0) {
+    return "  (no usage data recorded yet — turns pre-date cost tracking, or the message_end event hasn't fired)";
+  }
+
+  const total = sumUsage(normalized);
+  const byLe = costByLeClass(normalized);
+  const byDay = costByDay(normalized);
+  const itemsForMastery = items.map((i) => ({
+    mastery: i.data.mastery ?? null,
+  }));
+  const cpmk = costPerMasteredKc(total.cost_usd, itemsForMastery);
+  const masteredCount = itemsForMastery.filter(
+    (i) => i.mastery && i.mastery.n_probes > 0 && i.mastery.score >= 0.7,
+  ).length;
+
+  const rows: string[] = [];
+  rows.push(
+    `  total spend:     $${total.cost_usd.toFixed(4)} across ${withUsage.length} turns (${total.input_tokens.toLocaleString()} in → ${total.output_tokens.toLocaleString()} out, model=${total.model || "(unknown)"})`,
+  );
+  if (masteredCount > 0) {
+    rows.push(
+      `  cost / mastered KC (score ≥ 0.7, probed): $${cpmk.toFixed(4)}   (${masteredCount} mastered item${masteredCount === 1 ? "" : "s"})   ← lower is better`,
+    );
+  } else {
+    rows.push(
+      `  cost / mastered KC: n/a — no items have been probed to mastery (score ≥ 0.7) yet`,
+    );
+  }
+  rows.push("");
+  rows.push("  by Learning Event class:");
+  rows.push("    class              turns    total     avg/turn");
+  rows.push("    -----------------  -----  --------  ---------");
+  for (const key of ["memory_fluency", "induction", "sense_making", "(undeclared)"] as const) {
+    const b = byLe[key];
+    if (!b || b.n_turns === 0) continue;
+    rows.push(
+      `    ${key.padEnd(17)}  ${String(b.n_turns).padStart(5)}  $${b.cost_usd.toFixed(4).padStart(7)}  $${b.avg_usd.toFixed(4).padStart(8)}`,
+    );
+  }
+  rows.push("");
+  rows.push("  last 7 days:");
+  const recent = byDay.slice(-7);
+  if (recent.length === 0) {
+    rows.push("    (no dated turn entries)");
+  } else {
+    rows.push("    date         turns    total");
+    rows.push("    ----------   -----  --------");
+    for (const d of recent) {
+      rows.push(
+        `    ${d.date}   ${String(d.n_turns).padStart(5)}  $${d.cost_usd.toFixed(4).padStart(7)}`,
+      );
+    }
+  }
+  rows.push("");
+  rows.push(
+    "  interpretation: sense_making turns cost more per turn by design (longer reasoning).",
+  );
+  rows.push(
+    "  judge worth by comparing the principle curve slope above against the fact curve —",
+  );
+  rows.push(
+    "  if sense_making isn't bending the principle curve, it's dead money.",
+  );
+
+  return rows.join("\n");
+}
+
 function formatTopicTable(agg: Record<string, TopicMastery>): string {
   const entries = Object.entries(agg);
   if (entries.length === 0) {
@@ -348,6 +435,9 @@ function main(): void {
   console.log("");
   console.log("## Learning curves (avg error rate by opportunity)");
   console.log(formatCurves(curves));
+  console.log("");
+  console.log("## Cost");
+  console.log(formatCostSection(turns, items));
   console.log("");
   console.log("## Per-topic mastery");
   console.log(formatTopicTable(topicAgg));

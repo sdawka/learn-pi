@@ -26,6 +26,7 @@ import {
   gradeProbe,
   type MasteryState,
 } from "../lib/mastery.ts";
+import { type TurnUsage } from "../lib/cost.ts";
 
 // --- minimal ambient types for the pi-mono API we use ---------------------
 // We code against the documented shape; jiti resolves the real types at
@@ -85,6 +86,12 @@ type SessionState = {
   // Opportunities recorded by tool calls during the current turn. Reset on
   // before_agent_start, flushed in agent_end.
   turnOpportunities: Opportunity[];
+  // Per-turn LLM usage, accumulated across provider round trips. pi-mono's
+  // pi-ai emits `message_end` once per round trip with `message.usage`; we
+  // sum tokens/cost across all round trips for the turn, then flush at
+  // agent_end. null = no usage captured yet (e.g. turn errored before any
+  // provider call, or pi-mono didn't surface usage for this event).
+  turnUsage: TurnUsage | null;
 };
 
 function loadKnownLemmas(vault: Vault, lang: string): Set<string> {
@@ -166,6 +173,7 @@ export default function learnLoop(pi: ExtensionAPI): void {
       knownLemmas: loadKnownLemmas(vault, lang),
       leClass: null,
       turnOpportunities: [],
+      turnUsage: null,
     };
     pi.appendEntry("learn-pi-session", { lang, started: new Date().toISOString() });
   });
@@ -175,6 +183,7 @@ export default function learnLoop(pi: ExtensionAPI): void {
     // Lazy reset for the new turn — agent must call le.declare before composing.
     state.leClass = null;
     state.turnOpportunities = [];
+    state.turnUsage = null;
     state.turnsSinceProbe += 1;
     state.turnsSinceMasteryProbe += 1;
 
@@ -218,6 +227,61 @@ export default function learnLoop(pi: ExtensionAPI): void {
     ].join("\n");
 
     return { systemPrompt: event.systemPrompt + "\n\n" + directive };
+  });
+
+  // pi-mono fires `message_end` once per provider round trip. In a tool-call
+  // loop a single user-visible turn can produce multiple round trips (one for
+  // the assistant response, one per tool follow-up). Accumulate usage into
+  // state.turnUsage; agent_end flushes it to the TurnLogEntry.
+  //
+  // Payload shape (from pi-mono packages/agent/src/agent-loop.ts emit site):
+  //   event.message.usage = {
+  //     input, output, cacheRead, cacheWrite, totalTokens,
+  //     cost: { input, output, cacheRead, cacheWrite, total }
+  //   }
+  // cost.total already includes cache discounts, so we ingest it verbatim.
+  pi.on("message_end", async (event: any, _ctx) => {
+    if (!state) return;
+    const msg = event?.message;
+    const usage = msg?.usage;
+    if (!usage || typeof usage.cost?.total !== "number") return;
+
+    const model: string = msg.model ?? event?.model ?? "(unknown)";
+    const input = Number(usage.input ?? 0);
+    const output = Number(usage.output ?? 0);
+    const cacheRead = Number(usage.cacheRead ?? 0);
+    const cacheWrite = Number(usage.cacheWrite ?? 0);
+    const costTotal = Number(usage.cost.total);
+
+    if (state.turnUsage === null) {
+      state.turnUsage = {
+        model,
+        input_tokens: input,
+        output_tokens: output,
+        cache_read_tokens: cacheRead,
+        cache_write_tokens: cacheWrite,
+        cost_usd: costTotal,
+        n_messages: 1,
+      };
+    } else {
+      state.turnUsage.input_tokens += input;
+      state.turnUsage.output_tokens += output;
+      state.turnUsage.cache_read_tokens =
+        (state.turnUsage.cache_read_tokens ?? 0) + cacheRead;
+      state.turnUsage.cache_write_tokens =
+        (state.turnUsage.cache_write_tokens ?? 0) + cacheWrite;
+      state.turnUsage.cost_usd += costTotal;
+      state.turnUsage.n_messages += 1;
+      // Model shouldn't change mid-turn — flag if it does, keep the first.
+      if (state.turnUsage.model !== model) {
+        pi.appendEntry("learn-pi-warn", {
+          at: new Date().toISOString(),
+          kind: "model_mismatch_in_turn",
+          first: state.turnUsage.model,
+          seen: model,
+        });
+      }
+    }
   });
 
   pi.on("input", async (event: { text: string }, _ctx) => {
@@ -268,10 +332,12 @@ export default function learnLoop(pi: ExtensionAPI): void {
       subscore: zpd.subscore,
       le_class: state.leClass,
       opportunities: state.turnOpportunities,
+      usage: state.turnUsage,
     });
     // Clear per-turn state. Next turn re-declares via le.declare on entry.
     state.itemsTouched.clear();
     state.turnOpportunities = [];
+    state.turnUsage = null;
     try {
       const git = simpleGit(state.vault.root);
       await git.add(".");

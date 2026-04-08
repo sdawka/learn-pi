@@ -29,6 +29,7 @@ What is in the codebase and works today (as of the activation PR):
 - **GIFT four-module organization** — file headers name which module each file serves (Learner / Domain / Pedagogical / Sensor). Labeling, not a code reorg.
 - **Skill tagging** — every skill under `learn-pi/skills/*/SKILL.md` declares a `learning_event` in its frontmatter, so pedagogical intent is visible at the call site.
 - **Telegram bridge** — long-poll inbound, scheduled proactive pings, shared state via the git vault so laptop and VPS see the same world. — `learn-pi/extensions/telegram-gateway.ts`
+- **Cost tracking** — per-turn LLM spend captured from pi-mono's pi-ai usage payload, aggregated by LE class, by day, and as cost-per-mastered-KC. pi-mono owns the pricing tables; we ingest and aggregate. — `learn-pi/lib/cost.ts`, report section in `learn-pi/scripts/learning-report.ts`
 - **Unit tests** — vitest covers `mastery.ts` (gradeProbe edges, stale thresholds, topic aggregation). `npm test` runs them.
 
 ## Future state
@@ -36,6 +37,7 @@ What is in the codebase and works today (as of the activation PR):
 What we want to be able to say in 12–18 months:
 
 - **Curves drive pedagogy.** A flat learning curve for a `kc_type` automatically promotes its KCs to a different LE class until the curve bends. Today the curves are reported but not acted on.
+- **Budget caps with soft-cancel.** Daily/weekly spend limits in `profile.md` that block a turn before it hits the provider. Deferred from the cost-tracking PR until we have enough usage data to calibrate reasonable defaults.
 - **Bayesian Knowledge Tracing** on top of the opportunity log gives sharper, calibrated mastery estimates per KC.
 - **Generative probes.** The agent invents probes from context instead of pulling fixed prompts.
 - **Cross-lingual interference detection.** When you're juggling two target languages, the system flags interference patterns and interleaves practice to maximize discrimination.
