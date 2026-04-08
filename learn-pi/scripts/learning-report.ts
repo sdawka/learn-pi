@@ -340,8 +340,16 @@ function formatCostSection(
       `  cost / mastered KC (score ≥ 0.7, probed): $${cpmk.toFixed(4)}   (${masteredCount} mastered item${masteredCount === 1 ? "" : "s"})   ← lower is better`,
     );
   } else {
+    // Loud failure mode: a reader must not skim past "$0" and mistake it for
+    // "free". Name the spend on the same line as "0 items mastered" so the
+    // asymmetry is self-evident. See Principle 5 falsifiability nuance in
+    // docs/PRINCIPLES.md — this metric's degenerate state needs explicit
+    // surfacing or it reads as "perfect" when the system is broken.
     rows.push(
-      `  cost / mastered KC: n/a — no items have been probed to mastery (score ≥ 0.7) yet`,
+      `  cost / mastered KC: n/a   ⚠  $${total.cost_usd.toFixed(4)} spent, 0 items mastered`,
+    );
+    rows.push(
+      `    (zero here means "no probes yet", NOT "free" — run mastery.probe to measure mastery)`,
     );
   }
   rows.push("");

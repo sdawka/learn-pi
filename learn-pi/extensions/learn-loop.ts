@@ -240,6 +240,13 @@ export default function learnLoop(pi: ExtensionAPI): void {
   //     cost: { input, output, cacheRead, cacheWrite, total }
   //   }
   // cost.total already includes cache discounts, so we ingest it verbatim.
+  //
+  // Safety guard: pi-ai shouldn't change models mid-turn, but if it somehow
+  // does (e.g., model cycling during a compaction event), we emit a
+  // `learn-pi-warn` entry of kind "model_mismatch_in_turn" and keep the
+  // first-seen model on the accumulated usage. The warning is a sensor
+  // signal, not a control signal — the turn still logs, just with the
+  // original model attribution.
   pi.on("message_end", async (event: any, _ctx) => {
     if (!state) return;
     const msg = event?.message;
