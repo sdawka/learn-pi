@@ -17,7 +17,6 @@ import {
   type GapRow,
   type KcBucket,
   type ReportData,
-  type TopicMastery as _TopicMasteryUnused,
 } from "../lib/report-data.ts";
 import { type TopicMastery } from "../lib/mastery.ts";
 

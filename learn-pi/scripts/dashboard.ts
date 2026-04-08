@@ -2,9 +2,11 @@
 //
 //   npx tsx learn-pi/scripts/dashboard.ts ~/LearnVault [output.html]
 //
-// Produces a single self-contained HTML file with all data inlined, SVG
-// charts rendered server-side, and no runtime dependencies. Open it in any
-// modern browser. Commit it to git, email it, whatever — it's just a file.
+// Produces a single self-contained HTML file with all data and CSS inlined
+// and SVG charts rendered server-side. The only external dependency is
+// Google Fonts (Fraunces + JetBrains Mono) loaded via <link>; if the user is
+// offline the page falls back to Georgia and the system monospace stack.
+// No JS runtime, no server, no build step. Open the file.
 //
 // Aesthetic direction: editorial data-journalism with terminal heritage.
 // Fraunces display serif paired with JetBrains Mono for data, warm near-black
@@ -715,7 +717,7 @@ function renderHtml(data: ReportData): string {
       </div>
       <div class="meta">
         <div class="vault-path">${escapeHtml(data.vaultPath)}</div>
-        <div>lang=${data.lang} · ${data.items.length} items · ${data.turns.length} turns</div>
+        <div>lang=${escapeHtml(data.lang)} · ${data.items.length} items · ${data.turns.length} turns</div>
         <div>generated ${generated}</div>
       </div>
     </header>
