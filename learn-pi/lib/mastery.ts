@@ -53,3 +53,43 @@ export function isMasteryStale(
   const expected = Math.min(1, Math.max(0, (sm2Ease - 1.3) / 1.7));
   return mastery.score + 0.3 < expected;
 }
+
+// ── Per-topic aggregation ──────────────────────────────────────────────────
+//
+// Users think in topics ("subjunctive", "ser vs estar"), not in individual
+// lemmas. `aggregateByTopic` rolls per-item mastery up to topic-level summaries
+// for the learning report. An item with multiple topics contributes to each.
+// Items without `topics` are excluded — there's no implicit topic.
+
+export type TopicMastery = {
+  score: number;     // unweighted mean of contributing item mastery scores
+  n_items: number;
+  n_probes: number;  // sum across contributing items
+};
+
+export function aggregateByTopic(
+  items: Array<{ topics?: string[]; mastery?: MasteryState }>,
+): Record<string, TopicMastery> {
+  const buckets: Record<string, { sum: number; n_items: number; n_probes: number }> = {};
+  for (const item of items) {
+    const topics = item.topics ?? [];
+    if (topics.length === 0) continue;
+    const m = item.mastery ?? defaultMastery();
+    for (const topic of topics) {
+      const b = buckets[topic] ?? { sum: 0, n_items: 0, n_probes: 0 };
+      b.sum += m.score;
+      b.n_items += 1;
+      b.n_probes += m.n_probes;
+      buckets[topic] = b;
+    }
+  }
+  const out: Record<string, TopicMastery> = {};
+  for (const [topic, b] of Object.entries(buckets)) {
+    out[topic] = {
+      score: Math.round((b.sum / b.n_items) * 100) / 100,
+      n_items: b.n_items,
+      n_probes: b.n_probes,
+    };
+  }
+  return out;
+}
