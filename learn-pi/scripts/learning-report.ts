@@ -1,481 +1,340 @@
-// GIFT observation script: reports per-KC indicators, LE mix, learning curves,
-// per-topic mastery, and the probe-vs-practice gap.
+// GIFT observation script: terminal report of per-KC indicators, LE mix,
+// learning curves, cost, per-topic mastery, and the probe-vs-practice gap.
 //
 //   npx tsx learn-pi/scripts/learning-report.ts ~/LearnVault
 //
-// Tolerant of vaults that don't yet have kc_type / mastery / topics / le_class
-// fields — the first run's job is to show how much is missing. Reads turn
-// entries written by learn-loop.ts agent_end (Stream A producer; this is the
-// Stream B consumer). The TurnLogEntry shape is duplicated here intentionally;
-// see plan §"Shared data contract" — must stay in sync with learn-loop.ts.
+// All data extraction lives in lib/report-data.ts — this file is pure
+// formatting. The HTML dashboard at scripts/dashboard.ts reads the same
+// data and renders it differently.
 
 import path from "node:path";
 import { Vault } from "../lib/vault.ts";
 import {
-  aggregateByTopic,
-  defaultMastery,
-  isMasteryStale,
-  type MasteryState,
-  type TopicMastery,
-} from "../lib/mastery.ts";
-import {
-  costByDay,
-  costByLeClass,
-  costPerMasteredKc,
-  sumUsage,
-  type TurnUsage,
-} from "../lib/cost.ts";
+  buildReportData,
+  MAX_OPPORTUNITY,
+  type CostSummary,
+  type CurvePoint,
+  type GapRow,
+  type KcBucket,
+  type ReportData,
+  type TopicMastery as _TopicMasteryUnused,
+} from "../lib/report-data.ts";
+import { type TopicMastery } from "../lib/mastery.ts";
 
-type KcType = "fact" | "skill" | "principle";
-type LeClass = "memory_fluency" | "induction" | "sense_making";
+// ── Tiny layout helpers ────────────────────────────────────────────────────
 
-type ItemFrontmatter = {
-  lemma?: string;
-  kc_type?: KcType;
-  topics?: string[];
-  sm2?: { ease?: number };
-  mastery?: MasteryState;
-};
+const DIM = "\x1b[2m";
+const RESET = "\x1b[0m";
+const BOLD = "\x1b[1m";
+const RED = "\x1b[38;5;209m";
+const GREEN = "\x1b[38;5;108m";
 
-type Opportunity = {
-  lemma: string;
-  kind: "vocab" | "grammar";
-  kc_type: KcType | null;
-  topic: string | null;
-  grade: 0 | 1 | 2 | 3 | 4 | 5 | null;
-  probe: boolean;
-  mastery_quality: 0 | 1 | 2 | 3 | 4 | 5 | null;
-};
+// Disable color when piped (tsx sets process.stdout.isTTY correctly).
+const useColor = process.stdout.isTTY === true;
+const dim = (s: string) => (useColor ? `${DIM}${s}${RESET}` : s);
+const bold = (s: string) => (useColor ? `${BOLD}${s}${RESET}` : s);
+const warn = (s: string) => (useColor ? `${RED}${s}${RESET}` : s);
+const good = (s: string) => (useColor ? `${GREEN}${s}${RESET}` : s);
 
-type TurnEntry = {
-  at?: string;
-  rung?: string;
-  subscore?: number;
-  le_class?: LeClass | null;
-  opportunities?: Opportunity[];
-  usage?: TurnUsage | null;
-  // Legacy shape from PR #1.
-  items_touched?: string[];
-};
+const REPORT_WIDTH = 78;
 
-type BucketStats = {
-  count: number;
-  easeSum: number;
-  masterySum: number;
-  probedCount: number;
-};
-
-const MAX_OPPORTUNITY = 10;
-
-function emptyBucket(): BucketStats {
-  return { count: 0, easeSum: 0, masterySum: 0, probedCount: 0 };
+function hr(ch = "─"): string {
+  return dim(ch.repeat(REPORT_WIDTH));
 }
 
-function walkItems(
-  vault: Vault,
-  lang: string,
-): Array<{ kind: "vocab" | "grammar"; rel: string; data: ItemFrontmatter }> {
-  const out: Array<{
-    kind: "vocab" | "grammar";
-    rel: string;
-    data: ItemFrontmatter;
-  }> = [];
-  for (const kind of ["vocab", "grammar"] as const) {
-    const files = vault.list(`${kind}/${lang}`).filter((p) => p.endsWith(".md"));
-    for (const rel of files) {
-      const { data } = vault.readFrontmatter<ItemFrontmatter>(rel);
-      out.push({ kind, rel, data });
-    }
-  }
-  return out;
+function sectionHeading(n: number, title: string, subtitle?: string): string {
+  const head = `${dim(`§${n}`)}  ${bold(title.toUpperCase())}`;
+  if (!subtitle) return head;
+  return `${head}  ${dim(`· ${subtitle}`)}`;
 }
 
-function kcBuckets(items: ReturnType<typeof walkItems>): Record<string, BucketStats> {
-  const buckets: Record<string, BucketStats> = {
-    fact: emptyBucket(),
-    skill: emptyBucket(),
-    principle: emptyBucket(),
-    "(missing kc_type)": emptyBucket(),
-  };
-  for (const { data } of items) {
-    const key = data.kc_type ?? "(missing kc_type)";
-    const b = buckets[key] ?? emptyBucket();
-    buckets[key] = b;
-    b.count += 1;
-    b.easeSum += data.sm2?.ease ?? 2.5;
-    const m = data.mastery ?? defaultMastery();
-    b.masterySum += m.score;
-    if (m.n_probes > 0) b.probedCount += 1;
-  }
-  return buckets;
+// Right-align a number to a fixed width, preserving a leading "$" sign when
+// present without an extra space.
+function pad(s: string, w: number): string {
+  return s.length >= w ? s : " ".repeat(w - s.length) + s;
+}
+function padr(s: string, w: number): string {
+  return s.length >= w ? s : s + " ".repeat(w - s.length);
+}
+function money(n: number): string {
+  return `$${n.toFixed(4)}`;
 }
 
-// Read every session file and pull out the structured `learn-pi-turn` entries.
-// pi-mono's appendEntry writes one JSON object per line; we walk lines and try
-// to parse each one. We also handle balanced braces across multiple lines as a
-// fallback for pretty-printed entries.
-function readTurnEntries(vault: Vault): TurnEntry[] {
-  const turns: TurnEntry[] = [];
-  const files = vault.list("sessions").filter((p) => p.endsWith(".md"));
-  // Sort by filename — session files are ISO-timestamped, so this gives
-  // chronological order, which the learning-curve calculator depends on.
-  files.sort();
-  for (const rel of files) {
-    const raw = vault.read(rel);
-    for (const candidate of extractJsonObjects(raw)) {
-      try {
-        const parsed = JSON.parse(candidate) as TurnEntry;
-        if (parsed && (parsed.opportunities || parsed.items_touched)) {
-          turns.push(parsed);
-        }
-      } catch {
-        // Skip malformed blobs — better to under-count than to crash the report.
-      }
-    }
-  }
-  return turns;
+// ── Section renderers ──────────────────────────────────────────────────────
+
+function renderMasthead(data: ReportData): string {
+  const lines: string[] = [];
+  lines.push(bold("LEARN-PI LEARNING REPORT"));
+  lines.push(
+    dim(
+      `${data.vaultPath}  ·  lang=${data.lang}  ·  ${data.items.length} items · ${data.turns.length} turns  ·  generated ${data.generatedAt.slice(0, 19).replace("T", " ")}`,
+    ),
+  );
+  return lines.join("\n");
 }
 
-// Walk a string and yield top-level balanced `{...}` substrings. Handles
-// nested objects/arrays and ignores braces inside string literals.
-function extractJsonObjects(text: string): string[] {
-  const out: string[] = [];
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escape = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (inString) {
-      if (ch === "\\") escape = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0 && start !== -1) {
-        out.push(text.slice(start, i + 1));
-        start = -1;
-      }
-    }
+function renderKcBuckets(buckets: Record<string, KcBucket>): string {
+  if (Object.keys(buckets).length === 0) {
+    return dim("  (no items yet)");
   }
-  return out;
-}
-
-function leMixFromTurns(turns: TurnEntry[]): Record<string, number> {
-  const counts: Record<string, number> = {
-    memory_fluency: 0,
-    induction: 0,
-    sense_making: 0,
-    "(undeclared)": 0,
-  };
-  for (const t of turns) {
-    const cls = t.le_class ?? "(undeclared)";
-    counts[cls] = (counts[cls] ?? 0) + 1;
-  }
-  return counts;
-}
-
-// Build per-KC learning curves: average error rate at opportunity index n,
-// bucketed by kc_type. An opportunity is any graded turn (vocab.grade) or
-// probe (mastery.probe). Passive items_touched without grading are NOT
-// opportunities — KLI is strict about this.
-function learningCurves(
-  turns: TurnEntry[],
-): Record<string, Array<{ n: number; avgError: number; samples: number }>> {
-  // Per-KC opportunity sequences keyed by `${kind}:${lemma}`.
-  const sequences = new Map<string, { kc_type: KcType | null; errors: number[] }>();
-  for (const t of turns) {
-    if (!t.opportunities) continue;
-    for (const op of t.opportunities) {
-      if (op.grade === null && !op.probe) continue;
-      const key = `${op.kind}:${op.lemma}`;
-      const seq = sequences.get(key) ?? { kc_type: op.kc_type, errors: [] };
-      const quality = op.probe ? op.mastery_quality : op.grade;
-      if (quality === null) continue;
-      seq.errors.push(1 - quality / 5);
-      seq.kc_type = seq.kc_type ?? op.kc_type;
-      sequences.set(key, seq);
-    }
-  }
-
-  // Bucket by kc_type, then average across KCs at each opportunity index.
-  const buckets: Record<string, Array<number[]>> = {
-    fact: Array.from({ length: MAX_OPPORTUNITY }, () => []),
-    skill: Array.from({ length: MAX_OPPORTUNITY }, () => []),
-    principle: Array.from({ length: MAX_OPPORTUNITY }, () => []),
-    "(missing kc_type)": Array.from({ length: MAX_OPPORTUNITY }, () => []),
-  };
-  for (const seq of sequences.values()) {
-    const key = seq.kc_type ?? "(missing kc_type)";
-    const slots = buckets[key];
-    if (!slots) continue;
-    for (let i = 0; i < seq.errors.length && i < MAX_OPPORTUNITY; i += 1) {
-      slots[i].push(seq.errors[i]);
-    }
-  }
-
-  const out: Record<string, Array<{ n: number; avgError: number; samples: number }>> = {};
-  for (const [key, slots] of Object.entries(buckets)) {
-    const row = slots.map((vals, i) => ({
-      n: i + 1,
-      avgError: vals.length === 0 ? NaN : vals.reduce((a, b) => a + b, 0) / vals.length,
-      samples: vals.length,
-    }));
-    if (row.some((r) => r.samples > 0)) out[key] = row;
-  }
-  return out;
-}
-
-function gapList(
-  items: ReturnType<typeof walkItems>,
-): Array<{ rel: string; lemma: string; ease: number; mastery: number; n_probes: number }> {
-  const gaps: Array<{
-    rel: string;
-    lemma: string;
-    ease: number;
-    mastery: number;
-    n_probes: number;
-    severity: number;
-  }> = [];
-  for (const { rel, data } of items) {
-    const ease = data.sm2?.ease ?? 2.5;
-    const m = data.mastery ?? defaultMastery();
-    if (!isMasteryStale(m, ease)) continue;
-    const expected = Math.min(1, Math.max(0, (ease - 1.3) / 1.7));
-    const severity = expected - m.score;
-    gaps.push({
-      rel,
-      lemma: data.lemma ?? path.basename(rel, ".md"),
-      ease,
-      mastery: m.score,
-      n_probes: m.n_probes,
-      severity,
-    });
-  }
-  gaps.sort((a, b) => b.severity - a.severity);
-  return gaps.map(({ severity: _s, ...rest }) => rest);
-}
-
-function formatBucketTable(buckets: Record<string, BucketStats>): string {
-  const rows: string[] = [];
-  rows.push("  kc_type           count   avgEase   avgMastery   probed");
-  rows.push("  ----------------  ------  --------  -----------  ------");
-  for (const [key, b] of Object.entries(buckets)) {
-    if (b.count === 0) continue;
-    const avgEase = (b.easeSum / b.count).toFixed(2);
-    const avgMast = (b.masterySum / b.count).toFixed(2);
-    rows.push(
-      `  ${key.padEnd(16)}  ${String(b.count).padStart(6)}  ${avgEase.padStart(8)}  ${avgMast.padStart(11)}  ${String(b.probedCount).padStart(6)}`,
-    );
-  }
-  return rows.join("\n");
-}
-
-function formatCurves(
-  curves: Record<string, Array<{ n: number; avgError: number; samples: number }>>,
-): string {
-  if (Object.keys(curves).length === 0) {
-    return "  (no graded opportunities yet — call vocab.grade or mastery.probe to populate)";
-  }
-  const header = ["  kc_type     "];
-  for (let i = 1; i <= MAX_OPPORTUNITY; i += 1) header.push(`n=${i}  `.padStart(6));
-  const rows: string[] = [header.join("")];
-  rows.push(`  ${"-".repeat(11)}  ${Array.from({ length: MAX_OPPORTUNITY }, () => "----").join("  ")}`);
-  for (const [key, row] of Object.entries(curves)) {
-    const cells = row.map((r) =>
-      Number.isNaN(r.avgError) ? "  -  ".padStart(6) : r.avgError.toFixed(2).padStart(6),
-    );
-    rows.push(`  ${key.padEnd(11)} ${cells.join("  ")}`);
-  }
-  rows.push("");
-  rows.push("  flat = wrong LE class for this KC type; steep downward = good match");
-  return rows.join("\n");
-}
-
-function formatCostSection(
-  turns: TurnEntry[],
-  items: ReturnType<typeof walkItems>,
-): string {
-  // Normalize TurnEntry[] into the shape cost.ts helpers expect.
-  const normalized = turns.map((t) => ({
-    at: t.at ?? "",
-    le_class: t.le_class ?? null,
-    usage: t.usage ?? null,
-  }));
-  const withUsage = normalized.filter((t) => t.usage !== null);
-
-  if (withUsage.length === 0) {
-    return "  (no usage data recorded yet — turns pre-date cost tracking, or the message_end event hasn't fired)";
-  }
-
-  const total = sumUsage(normalized);
-  const byLe = costByLeClass(normalized);
-  const byDay = costByDay(normalized);
-  const itemsForMastery = items.map((i) => ({
-    mastery: i.data.mastery ?? null,
-  }));
-  const cpmk = costPerMasteredKc(total.cost_usd, itemsForMastery);
-  const masteredCount = itemsForMastery.filter(
-    (i) => i.mastery && i.mastery.n_probes > 0 && i.mastery.score >= 0.7,
-  ).length;
-
   const rows: string[] = [];
   rows.push(
-    `  total spend:     $${total.cost_usd.toFixed(4)} across ${withUsage.length} turns (${total.input_tokens.toLocaleString()} in → ${total.output_tokens.toLocaleString()} out, model=${total.model || "(unknown)"})`,
+    dim("  kc_type        ") +
+      dim("   count") +
+      dim("   avg ease") +
+      dim("   avg mastery") +
+      dim("   probed"),
   );
-  if (masteredCount > 0) {
+  for (const [key, b] of Object.entries(buckets)) {
+    const keyDisplay =
+      key === "(missing kc_type)" ? warn(padr("(missing)", 14)) : padr(key, 14);
     rows.push(
-      `  cost / mastered KC (score ≥ 0.7, probed): $${cpmk.toFixed(4)}   (${masteredCount} mastered item${masteredCount === 1 ? "" : "s"})   ← lower is better`,
+      `  ${keyDisplay}  ${pad(String(b.count), 6)}   ${pad(b.avgEase.toFixed(2), 8)}   ${pad(b.avgMastery.toFixed(2), 11)}   ${pad(String(b.probedCount), 6)}`,
+    );
+  }
+  return rows.join("\n");
+}
+
+function renderLeMix(leMix: Record<string, number>): string {
+  const entries = Object.entries(leMix).filter(([, n]) => n > 0);
+  if (entries.length === 0) return dim("  (no turns logged)");
+  const total = entries.reduce((a, [, n]) => a + n, 0);
+  const maxLabel = Math.max(...entries.map(([k]) => k.length));
+  const rows: string[] = [];
+  for (const [cls, n] of entries) {
+    const pct = (n / total) * 100;
+    const barWidth = Math.round((n / total) * 32);
+    const bar = "▰".repeat(barWidth) + dim("▱".repeat(32 - barWidth));
+    const label = cls === "(undeclared)" ? warn(padr(cls, maxLabel)) : padr(cls, maxLabel);
+    rows.push(`  ${label}  ${bar}  ${pad(String(n), 4)}  ${dim(`${pct.toFixed(0).padStart(3)}%`)}`);
+  }
+  return rows.join("\n");
+}
+
+function renderCurves(curves: Record<string, CurvePoint[]>): string {
+  if (Object.keys(curves).length === 0) {
+    return dim("  (no graded opportunities yet — call vocab.grade or mastery.probe)");
+  }
+  const colWidth = 5;
+  const labelWidth = 14;
+  const header =
+    dim(padr("  kc_type", labelWidth + 2)) +
+    Array.from({ length: MAX_OPPORTUNITY }, (_, i) => dim(pad(`n${i + 1}`, colWidth))).join(" ");
+  const rows: string[] = [header];
+  rows.push(dim("  " + "─".repeat(labelWidth) + "  " + "─".repeat(MAX_OPPORTUNITY * (colWidth + 1) - 1)));
+  for (const [key, row] of Object.entries(curves)) {
+    const cells = row
+      .map((r) =>
+        Number.isNaN(r.avgError) ? dim(pad("·", colWidth)) : pad(r.avgError.toFixed(2), colWidth),
+      )
+      .join(" ");
+    const label = key === "(missing kc_type)" ? warn(padr("(missing)", labelWidth)) : padr(key, labelWidth);
+    rows.push(`  ${label}  ${cells}`);
+  }
+  rows.push("");
+  rows.push(
+    dim(
+      `  ${good("↓ steep downward")} = LE class matches the KC type   ·   ${warn("— flat")} = mismatch`,
+    ),
+  );
+  return rows.join("\n");
+}
+
+function renderCost(cost: CostSummary): string {
+  if (!cost.hasUsage) {
+    return dim(
+      "  (no usage data recorded yet — turns pre-date cost tracking or message_end didn't fire)",
+    );
+  }
+  const rows: string[] = [];
+  const totalLine =
+    bold(money(cost.total.cost_usd)) +
+    dim(`  across ${cost.withUsageCount} turns   `) +
+    dim(`${cost.total.input_tokens.toLocaleString()} in → ${cost.total.output_tokens.toLocaleString()} out   `) +
+    dim(`model=${cost.total.model || "(unknown)"}`);
+  rows.push("  " + totalLine);
+
+  // Headline: cost per mastered KC (Principle 5 falsifiable metric)
+  if (cost.masteredCount > 0) {
+    rows.push(
+      "  " +
+        dim("cost / mastered KC  ") +
+        bold(money(cost.costPerMasteredKc)) +
+        dim(`   (${cost.masteredCount} mastered item${cost.masteredCount === 1 ? "" : "s"}, score ≥ 0.7)   `) +
+        good("← lower is better"),
     );
   } else {
-    // Loud failure mode: a reader must not skim past "$0" and mistake it for
-    // "free". Name the spend on the same line as "0 items mastered" so the
-    // asymmetry is self-evident. See Principle 5 falsifiability nuance in
-    // docs/PRINCIPLES.md — this metric's degenerate state needs explicit
-    // surfacing or it reads as "perfect" when the system is broken.
     rows.push(
-      `  cost / mastered KC: n/a   ⚠  $${total.cost_usd.toFixed(4)} spent, 0 items mastered`,
+      "  " +
+        dim("cost / mastered KC  ") +
+        warn("n/a  ⚠") +
+        dim(`  ${money(cost.total.cost_usd)} spent, `) +
+        warn("0 items mastered"),
     );
     rows.push(
-      `    (zero here means "no probes yet", NOT "free" — run mastery.probe to measure mastery)`,
+      dim(
+        '    zero here means "no probes yet", NOT "free" — run mastery.probe to measure mastery',
+      ),
     );
   }
   rows.push("");
-  rows.push("  by Learning Event class:");
-  rows.push("    class              turns    total     avg/turn");
-  rows.push("    -----------------  -----  --------  ---------");
-  for (const key of ["memory_fluency", "induction", "sense_making", "(undeclared)"] as const) {
-    const b = byLe[key];
-    if (!b || b.n_turns === 0) continue;
+
+  // By LE class — with cost bars
+  const leEntries = (["memory_fluency", "induction", "sense_making", "(undeclared)"] as const)
+    .map((k) => [k, cost.byLeClass[k]] as const)
+    .filter(([, b]) => b && b.n_turns > 0);
+  if (leEntries.length > 0) {
+    const maxTotal = Math.max(...leEntries.map(([, b]) => b!.cost_usd));
+    rows.push(dim("  by Learning Event class"));
     rows.push(
-      `    ${key.padEnd(17)}  ${String(b.n_turns).padStart(5)}  $${b.cost_usd.toFixed(4).padStart(7)}  $${b.avg_usd.toFixed(4).padStart(8)}`,
+      dim("    class              turns      total   avg/turn   "),
     );
-  }
-  rows.push("");
-  rows.push("  last 7 days:");
-  const recent = byDay.slice(-7);
-  if (recent.length === 0) {
-    rows.push("    (no dated turn entries)");
-  } else {
-    rows.push("    date         turns    total");
-    rows.push("    ----------   -----  --------");
-    for (const d of recent) {
+    for (const [key, b] of leEntries) {
+      if (!b) continue;
+      const barWidth = maxTotal > 0 ? Math.round((b.cost_usd / maxTotal) * 18) : 0;
+      const bar = dim("▬".repeat(barWidth));
+      const label = key === "(undeclared)" ? warn(padr(key, 16)) : padr(key, 16);
       rows.push(
-        `    ${d.date}   ${String(d.n_turns).padStart(5)}  $${d.cost_usd.toFixed(4).padStart(7)}`,
+        `    ${label}  ${pad(String(b.n_turns), 5)}   ${pad(money(b.cost_usd), 8)}   ${pad(money(b.avg_usd), 8)}  ${bar}`,
       );
     }
+    rows.push("");
   }
-  rows.push("");
-  rows.push(
-    "  interpretation: sense_making turns cost more per turn by design (longer reasoning).",
-  );
-  rows.push(
-    "  judge worth by comparing the principle curve slope above against the fact curve —",
-  );
-  rows.push(
-    "  if sense_making isn't bending the principle curve, it's dead money.",
-  );
 
+  // Last 7 days
+  const recent = cost.byDay.slice(-7);
+  if (recent.length > 0) {
+    const maxDayTotal = Math.max(...recent.map((d) => d.cost_usd));
+    rows.push(dim("  last 7 days"));
+    rows.push(dim("    date         turns      total"));
+    for (const d of recent) {
+      const barWidth = maxDayTotal > 0 ? Math.round((d.cost_usd / maxDayTotal) * 22) : 0;
+      const bar = dim("▬".repeat(barWidth));
+      rows.push(
+        `    ${d.date}  ${pad(String(d.n_turns), 5)}   ${pad(money(d.cost_usd), 8)}  ${bar}`,
+      );
+    }
+    rows.push("");
+  }
+
+  rows.push(
+    dim(
+      "  interpretation: sense_making turns cost more by design. If they aren't",
+    ),
+  );
+  rows.push(
+    dim(
+      "  bending the principle curve above, they're dead money.",
+    ),
+  );
   return rows.join("\n");
 }
 
-function formatTopicTable(agg: Record<string, TopicMastery>): string {
+function renderTopicTable(agg: Record<string, TopicMastery>): string {
   const entries = Object.entries(agg);
   if (entries.length === 0) {
-    return '  (no items have `topics:` set yet — tag items in vocab/grammar frontmatter to enable per-topic measurement)';
+    return dim(
+      '  (no items have `topics:` set yet — tag items in frontmatter to enable aggregation)',
+    );
   }
-  entries.sort((a, b) => a[0].localeCompare(b[0]));
+  entries.sort((a, b) => b[1].score - a[1].score);
   const rows: string[] = [];
-  rows.push("  topic                n_items   avg_score   n_probes");
-  rows.push("  -------------------  -------   ---------   --------");
+  rows.push(dim("  topic              items    score   probes"));
   for (const [topic, t] of entries) {
+    const barWidth = Math.round(t.score * 20);
+    const bar = "▰".repeat(barWidth) + dim("▱".repeat(20 - barWidth));
     rows.push(
-      `  ${topic.padEnd(19)}  ${String(t.n_items).padStart(7)}   ${t.score.toFixed(2).padStart(9)}   ${String(t.n_probes).padStart(8)}`,
+      `  ${padr(topic, 17)}  ${pad(String(t.n_items), 5)}   ${bar}  ${pad(t.score.toFixed(2), 5)}   ${pad(String(t.n_probes), 5)}`,
     );
   }
   return rows.join("\n");
 }
 
-function main(): void {
-  const vaultPath = process.argv[2] ?? path.join(process.env.HOME ?? ".", "LearnVault");
-  const vault = new Vault(vaultPath);
-
-  let lang = "es";
-  if (vault.exists("profile.md")) {
-    const { data } = vault.readFrontmatter<{ target_langs?: string[] }>(
-      "profile.md",
-    );
-    if (data.target_langs?.[0]) lang = data.target_langs[0];
-  }
-
-  const items = walkItems(vault, lang);
-  const buckets = kcBuckets(items);
-  const turns = readTurnEntries(vault);
-  const leMix = leMixFromTurns(turns);
-  const curves = learningCurves(turns);
-  const gaps = gapList(items);
-  const topicAgg = aggregateByTopic(
-    items.map((i) => ({ topics: i.data.topics, mastery: i.data.mastery })),
-  );
-
-  console.log(`learn-pi learning report — vault=${vaultPath} lang=${lang}`);
-  console.log(`items scanned: ${items.length}   turn entries: ${turns.length}`);
-  console.log("");
-  console.log("## Per-KC indicators");
-  console.log(formatBucketTable(buckets));
-  console.log("");
-  console.log("## Learning Event mix (declared per turn)");
-  for (const [cls, n] of Object.entries(leMix)) {
-    if (n > 0) console.log(`  ${cls.padEnd(18)} ${n}`);
-  }
-  console.log("");
-  console.log("## Learning curves (avg error rate by opportunity)");
-  console.log(formatCurves(curves));
-  console.log("");
-  console.log("## Cost");
-  console.log(formatCostSection(turns, items));
-  console.log("");
-  console.log("## Per-topic mastery");
-  console.log(formatTopicTable(topicAgg));
-  console.log("");
-  console.log("## Probe-vs-practice gap");
+function renderGaps(gaps: GapRow[]): string {
   if (gaps.length === 0) {
-    console.log("  (none — either mastery is tracked and matches SM-2, or probes haven't run yet)");
-  } else {
-    console.log("  lemma                    ease    mastery   probes");
-    console.log("  -----------------------  ------  --------  ------");
-    for (const g of gaps.slice(0, 20)) {
-      console.log(
-        `  ${g.lemma.padEnd(23)}  ${g.ease.toFixed(2).padStart(6)}  ${g.mastery.toFixed(2).padStart(8)}  ${String(g.n_probes).padStart(6)}`,
-      );
-    }
-    if (gaps.length > 20) console.log(`  ... (${gaps.length - 20} more)`);
+    return good("  (none — mastery matches SM-2, or probes haven't revealed a gap)");
+  }
+  const rows: string[] = [];
+  rows.push(dim("  lemma                   ease   mastery   probes   severity"));
+  for (const g of gaps.slice(0, 15)) {
+    const severityBar = "▬".repeat(Math.round(g.severity * 20));
+    rows.push(
+      `  ${padr(g.lemma, 22)}  ${pad(g.ease.toFixed(2), 4)}   ${pad(g.mastery.toFixed(2), 7)}   ${pad(String(g.n_probes), 6)}   ${warn(severityBar)}`,
+    );
+  }
+  if (gaps.length > 15) {
+    rows.push(dim(`  ... and ${gaps.length - 15} more`));
+  }
+  return rows.join("\n");
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────
+
+function main(): void {
+  const vaultPath =
+    process.argv[2] ?? path.join(process.env.HOME ?? ".", "LearnVault");
+  const vault = new Vault(vaultPath);
+  const data = buildReportData(vault, vaultPath);
+
+  const out: string[] = [];
+  out.push(renderMasthead(data));
+  out.push(hr());
+  out.push("");
+  out.push(sectionHeading(1, "Per-KC indicators", "what's in the vault"));
+  out.push("");
+  out.push(renderKcBuckets(data.kcBuckets));
+  out.push("");
+  out.push(hr());
+  out.push("");
+  out.push(sectionHeading(2, "Learning Event mix", "pedagogical intent, per turn"));
+  out.push("");
+  out.push(renderLeMix(data.leMix));
+  out.push("");
+  out.push(hr());
+  out.push("");
+  out.push(sectionHeading(3, "Learning curves", "avg error rate by opportunity · KLI signature"));
+  out.push("");
+  out.push(renderCurves(data.curves));
+  out.push("");
+  out.push(hr());
+  out.push("");
+  out.push(sectionHeading(4, "Cost", "pi-ai usage, aggregated"));
+  out.push("");
+  out.push(renderCost(data.cost));
+  out.push("");
+  out.push(hr());
+  out.push("");
+  out.push(sectionHeading(5, "Per-topic mastery", "unweighted mean of item scores"));
+  out.push("");
+  out.push(renderTopicTable(data.topicMastery));
+  out.push("");
+  out.push(hr());
+  out.push("");
+  out.push(sectionHeading(6, "Probe-vs-practice gap", "high SM-2 ease, low probe mastery"));
+  out.push("");
+  out.push(renderGaps(data.gaps));
+  out.push("");
+  out.push(hr());
+
+  // Footer notes — only warn when there's something to warn about.
+  const missing = data.kcBuckets["(missing kc_type)"]?.count ?? 0;
+  if (missing > 0) {
+    out.push("");
+    out.push(
+      dim("note: ") +
+        warn(`${missing} item(s) lack kc_type`) +
+        dim(". Run scripts/backfill-frontmatter.ts to fix."),
+    );
+  }
+  if ((data.leMix["(undeclared)"] ?? 0) > 0) {
+    out.push(
+      dim("note: ") +
+        warn(`${data.leMix["(undeclared)"]} turn(s) had no le_class declared`) +
+        dim(". Agent should call le.declare each turn."),
+    );
   }
 
-  const missing = buckets["(missing kc_type)"]?.count ?? 0;
-  if (missing > 0) {
-    console.log("");
-    console.log(
-      `note: ${missing} item(s) lack kc_type. Run scripts/backfill-frontmatter.ts to fix.`,
-    );
-  }
-  if ((leMix["(undeclared)"] ?? 0) > 0) {
-    console.log(
-      `note: ${leMix["(undeclared)"]} turn(s) had no le_class declared. Agent should call le.declare each turn.`,
-    );
-  }
+  console.log(out.join("\n"));
 }
 
 main();
