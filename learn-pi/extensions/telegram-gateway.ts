@@ -15,6 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
+import { inWindow } from "../lib/time-window.ts";
 
 type ExtensionAPI = {
   on(event: string, handler: (event: any, ctx: any) => any): void;
@@ -43,21 +44,6 @@ type Update = {
 function readYaml<T>(abs: string): T | null {
   if (!fs.existsSync(abs)) return null;
   return yaml.load(fs.readFileSync(abs, "utf8")) as T;
-}
-
-function parseWindow(hhmm: string): [number, number] {
-  const [a, b] = hhmm.split("-");
-  const toMin = (s: string) => {
-    const [h, m] = s.split(":").map(Number);
-    return h * 60 + m;
-  };
-  return [toMin(a), toMin(b)];
-}
-
-function inWindow(now: Date, window: string): boolean {
-  const mins = now.getHours() * 60 + now.getMinutes();
-  const [start, end] = parseWindow(window);
-  return start <= end ? mins >= start && mins < end : mins >= start || mins < end;
 }
 
 function parseCadence(c: string): number {
@@ -129,8 +115,9 @@ export default function telegramGateway(pi: ExtensionAPI): void {
     setInterval(() => {
       if (!boundChatId || !token || !tgSettings || !schedule) return;
       const now = new Date();
-      if (!inWindow(now, schedule.active_window)) return;
-      if (inWindow(now, tgSettings.quiet_hours)) return;
+      const tz = tgSettings.timezone;
+      if (!inWindow(now, schedule.active_window, tz)) return;
+      if (inWindow(now, tgSettings.quiet_hours, tz)) return;
       if (Date.now() - lastProactiveAt < Math.max(gapMs, cadenceMs)) return;
       lastProactiveAt = Date.now();
       pi.sendUserMessage(""); // empty → agent composes a proactive turn
