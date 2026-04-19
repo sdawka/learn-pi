@@ -125,31 +125,34 @@ export default function telegramGateway(pi: ExtensionAPI): void {
   });
 
   // Outbound: after each agent turn, send the latest assistant message.
+  // pi-mono's SessionMessageEntry shape is { type: "message", message: { role,
+  // content } } — role/content live on the nested message, not the entry
+  // itself. Earlier versions of this handler read e.role / e.content at the
+  // top level, which silently skipped every assistant entry.
   pi.on("agent_end", async (_event, ctx) => {
     if (!token || !boundChatId) return;
-    const entries: Array<{ role?: string; content?: any; customType?: string }> =
-      ctx.sessionManager?.getEntries?.() ?? [];
-    // Find the most recent assistant text entry.
+    type EntryLike = {
+      type?: string;
+      customType?: string;
+      message?: { role?: string; content?: unknown };
+    };
+    const entries: EntryLike[] = ctx.sessionManager?.getEntries?.() ?? [];
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
-      if (e.customType) continue;
-      if (e.role !== "assistant") continue;
+      if (e.type !== "message") continue;
+      if (e.message?.role !== "assistant") continue;
+      const content = e.message.content;
       const text =
-        typeof e.content === "string"
-          ? e.content
-          : Array.isArray(e.content)
-          ? e.content
-              .filter((p: any) => p.type === "text")
+        typeof content === "string"
+          ? content
+          : Array.isArray(content)
+          ? content
+              .filter((p: any) => p?.type === "text")
               .map((p: any) => p.text)
               .join("\n")
           : "";
-      // Skip empty assistant entries (tool-only messages, empty wraps after
-      // tool-calls, flaky model returning zero-token content). Walk back to
-      // find the most recent assistant entry that actually has text.
-      if (!text) continue;
-      // Dedup against what we already sent — if it matches, we've forwarded
-      // this turn's text already on a prior agent_end, so stop walking.
-      if (text === lastAssistantSent) return;
+      if (!text) continue;                     // tool-only turn, or flaky empty
+      if (text === lastAssistantSent) return;  // already forwarded this text
       lastAssistantSent = text;
       try {
         await tg(token, "sendMessage", { chat_id: boundChatId, text });
