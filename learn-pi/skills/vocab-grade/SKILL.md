@@ -2,7 +2,7 @@
 name: vocab-grade
 description: At end of turn (when items_touched is non-empty) or end of session, grade each touched vocab/grammar item on the 0–5 SM-2 scale.
 when_to_use: Called by learn-loop in onSessionEnd, or after any turn where items_touched has entries.
-tools: [vocab.grade]
+tools: [vocab_grade]
 learning_event: memory_fluency
 ---
 
