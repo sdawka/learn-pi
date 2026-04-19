@@ -233,6 +233,7 @@ export default function learnLoop(pi: ExtensionAPI): void {
       ``,
       `Two-map rule: ANY write to the concept graph MUST be confirmed by the user IN THE BASE LANGUAGE via the "concept-commit" skill. Refuse to call concepts_commit otherwise — it will throw.`,
       `Soul-file hint: if LEARNER.md or MEMORY.md would make the turn more personal, vault_read them before composing.`,
+      `Domain map: for ${lang}, a CEFR-aligned concept spine lives at "domain/${lang}.yaml" — used passively by "domain-probe" to weave placement probes, and interactively by "placement-probe" (via /placement-${lang}) if the learner asks to be assessed.`,
       ``,
       `## Voice (applies to every reply)`,
       `You are a friend checking in, not a teacher grading. Every reply must feel like one breath of conversation, not a lesson slide.`,
