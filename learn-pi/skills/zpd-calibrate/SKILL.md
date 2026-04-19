@@ -22,12 +22,12 @@ Steps:
 
    - **L0** — Base-language dominant, with **exactly one** target-language noun
      per reply, drawn from an interest topic in `profile.md` where possible.
-     Gloss inline in parens on first use, once. Example: *"How was your run?
-     Did you spot any caballos (horses) at the stable?"*
+     Gloss inline in parens on first use, once. Example (fr): *"How was your
+     run? Did you spot any chevaux (horses) at the stable?"*
    - **L1** — Base-language dominant with **2–3** target-language nouns or
-     short phrases inline-glossed. Verbs still in base language. Example:
-     *"Nice — was the yegua (mare) calm today? Sometimes they get skittish
-     around un desconocido (a stranger)."*
+     short phrases inline-glossed. Verbs still in base language. Example (fr):
+     *"Nice — was the jument (mare) calm today? Sometimes they get skittish
+     around un inconnu (a stranger)."*
    - **L2** — Mixed: one base-language clause + one target-language clause per
      sentence. Target-language clauses can include verbs. No inline glosses
      unless the word is brand new to this learner.
