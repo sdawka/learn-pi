@@ -2,7 +2,7 @@
 name: concept-probe
 description: Ask exactly one base-language question that would expand the belief/concept graph about the user, at most once every 3 turns.
 when_to_use: Trigger when `concepts.subjectCoverage(currentTopic)` is thin, or when the user just mentioned a new life domain the graph knows nothing about.
-tools: [concepts.query]
+tools: [concepts_query]
 learning_event: sense_making
 ---
 

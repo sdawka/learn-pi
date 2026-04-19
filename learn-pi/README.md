@@ -61,7 +61,8 @@ See [../docs/plan.md](../docs/plan.md) for the full design. Summary:
 - `src/extensions/learn-loop.ts` — main lifecycle extension: ZPD, vocab, belief graph, git sync.
 - `src/extensions/telegram-gateway.ts` — Telegram long-poll + scheduled proactive pings.
 - `src/lib/` — SM-2, vault I/O, concepts DB, ZPD state, due queue.
-- `skills/` — on-demand capability packages (zpd-calibrate, simplify-ladder, recall-weave, concept-probe, concept-commit, vocab-introduce, vocab-grade).
+- `skills/` — on-demand capability packages (zpd-calibrate, simplify-ladder, spot-gloss, proactive-opener, memory-append, recall-weave, concept-probe, concept-commit, vocab-introduce, vocab-grade).
+- `LearnVault/LEARNER.md` + `LearnVault/MEMORY.md` — soul-style persistent files. `LEARNER.md` captures who the learner is, why they're learning, and what they care about; `MEMORY.md` is an append-only log of notable session moments. The proactive-opener skill reads both so pings feel like a friend checking in, not a generic drill. Populate LEARNER.md once via `/bootstrap-learner`; `memory-append` writes to MEMORY.md during normal turns.
 - `prompt-templates/` — `/start-session`, `/tired`, `/probe`.
 
 The concept graph in `concepts.db` is **base-language authoritative**. Any write requires base-language confirmation; the `concept-commit` skill is the only path that calls `concepts.commit`, and `ConceptsDb.commit` throws if `baseLangConfirmed !== true`.

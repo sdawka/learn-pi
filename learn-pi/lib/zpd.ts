@@ -20,10 +20,14 @@ export type ZpdState = {
 };
 
 function defaultState(lang: string): ZpdState {
+  // Cold-start at L0 near the top of its subscore range: the learner's first
+  // turns are in pure base language with a sprinkle of target vocabulary, and
+  // any fluent target-language reply (+0.15) promotes toward L1 within a few
+  // exchanges. Principle 1 — we measure evidence before we climb.
   return {
     lang,
-    rung: "L1",
-    subscore: 0.3,
+    rung: "L0",
+    subscore: 0.7,
     updated_at: new Date().toISOString(),
     per_topic: {},
   };
