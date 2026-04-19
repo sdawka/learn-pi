@@ -3,3 +3,15 @@ learn-pi/node_modules/
 learn-pi/package-lock.json
 .env
 .env.*
+
+# Defensive: if pi is ever run from the app repo root by mistake, the
+# learn-loop extension will try to `git add .` and commit vault state.
+# These rules make the stray add a no-op.
+concepts.db
+concepts/
+queue/
+vocab/
+grammar/
+zpd/
+sessions/
+*.zip
