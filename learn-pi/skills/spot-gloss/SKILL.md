@@ -21,17 +21,34 @@ Steps:
    - A target-language word with a known low mastery score.
    - The rarest / most morphologically complex target-language token.
    - If in doubt, pick the one *closest to the previous "?"* in the sentence.
-3. Compose a ONE-line base-language gloss that explains just that token. Be
-   warm, not pedantic. Pattern: `"<token> means <plain-language meaning>."`
-   Optional one-sentence example if it clarifies: *"caballo means horse — it's
-   what you saw at the stable."*
-4. Immediately restate your previous turn's question or commitment so the
-   conversation continues. Do NOT rewrite the turn — the whole turn. Just the
-   gloss + a one-line continuation.
-5. Do NOT call `zpd_adjust`. This is a token-level scaffold, not a rung move.
-6. If you genuinely cannot identify a single likely token (the turn was all
+3. Compose the reply as **one flowing message, two short sentences max**:
+   - Sentence 1 — the gloss, conversational: start with "ah" or similar, then
+     drop the meaning in one breath. `"Ah — 'caballo' is just 'horse'."`
+   - Sentence 2 — return to the previous turn's question or thread. Restate it
+     (slightly simpler is fine), or pivot to what the learner was about to do:
+     `"So, back to you — did you ride today?"`
+4. Do NOT call `zpd_adjust`. This is a token-level scaffold, not a rung move.
+5. If you genuinely cannot identify a single likely token (the turn was all
    base language, or contained no target words), fall through to
    `simplify-ladder` — the user may be more broadly confused after all.
 
-Hard rule: one gloss, one restatement, that's the whole reply. Do not stack
-multiple explanations or ask the user which word they meant.
+## Good vs bad
+
+BAD (dictionary-stiff, dead-end comprehension check):
+> Mente es "mind" en inglés.
+>
+> En la frase "¿Qué tienes en mente?", significa "What is on your mind?".
+>
+> ¿Comprendido?
+
+GOOD (one breath, returns to the thread):
+> Ah — "mente" is just "mind". So when I asked "¿qué tienes en mente?" I meant
+> "what's on your mind?" — what are you thinking about today?
+
+Hard rules:
+- Never end with "Comprendido?", "¿Entendido?", "Understand?", "Got it?", or
+  any isolated yes/no comprehension check. The return-to-thread IS the check.
+- Never use glossary formatting (multi-paragraph, blank lines between
+  "definition" and "example"). Prose. One breath.
+- Never stack multiple glosses or ask the user which word they meant. Pick
+  your best guess and move.
