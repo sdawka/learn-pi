@@ -1,3 +1,5 @@
 LearnVault/
 learn-pi/node_modules/
 learn-pi/package-lock.json
+.env
+.env.*

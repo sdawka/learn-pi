@@ -6,16 +6,33 @@
 # to pass --model on the CLI where the "custom model id" fallback kicks in.
 #
 # Usage:
-#   ./learn-pi/scripts/run.sh --vault .
-#   ./learn-pi/scripts/run.sh --vault . /start-session es
+#   cd ~/LearnVault && /path/to/run.sh --vault .
+#   /path/to/run.sh --vault ~/LearnVault /start-session es
 #
-# Env:
-#   OPENROUTER_API_KEY         required for openrouter/elephant-alpha
-#   LEARN_PI_TELEGRAM_TOKEN    required for the telegram-gateway extension
+# Secrets: sourced from <vault>/.env if present (keep it gitignored).
+# Required keys:
+#   OPENROUTER_API_KEY         https://openrouter.ai/keys
+#   LEARN_PI_TELEGRAM_TOKEN    from @BotFather (optional; gateway no-ops without it)
 
 set -euo pipefail
 
-: "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY must be set (https://openrouter.ai/keys)}"
+# Resolve the vault path from --vault <path>, or default to $PWD. We walk the
+# args so we don't care about ordering relative to other pi flags.
+vault="$PWD"
+args=("$@")
+for (( i=0; i<${#args[@]}; i++ )); do
+  if [[ "${args[i]}" == "--vault" && $((i+1)) -lt ${#args[@]} ]]; then
+    vault="${args[i+1]}"
+    break
+  fi
+done
+
+if [[ -f "$vault/.env" ]]; then
+  # shellcheck source=/dev/null
+  set -a; . "$vault/.env"; set +a
+fi
+
+: "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY must be set (put it in $vault/.env)}"
 
 if [[ -z "${LEARN_PI_TELEGRAM_TOKEN:-}" ]]; then
   echo "warn: LEARN_PI_TELEGRAM_TOKEN not set — telegram-gateway will no-op" >&2

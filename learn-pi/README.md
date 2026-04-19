@@ -25,18 +25,25 @@ pi package install ./learn-pi
 
 ## Run
 
-```sh
-export OPENROUTER_API_KEY=...          # https://openrouter.ai/keys
-export LEARN_PI_TELEGRAM_TOKEN=...     # from @BotFather
+Put your secrets in `<vault>/.env` (gitignored in both this repo and the vault repo):
 
+```
+LEARN_PI_TELEGRAM_TOKEN=...   # from @BotFather
+OPENROUTER_API_KEY=...        # https://openrouter.ai/keys
+```
+
+Then:
+
+```sh
 cd ~/LearnVault          # a git repo created from the scaffold in this project
 /path/to/learn-pi/scripts/run.sh --vault .
 /start-session es
 ```
 
-`scripts/run.sh` pins the model to `openrouter/elephant-alpha` (see the
-script for why we can't persist this via pi's saved-default settings). If
-you want a different model, invoke `pi` directly with `--model ...`.
+`scripts/run.sh` sources `<vault>/.env`, pins the model to
+`openrouter/elephant-alpha` (see the script for why we can't persist this
+via pi's saved-default settings), and execs `pi`. For a different model,
+invoke `pi` directly with `--model ...`.
 
 If you haven't pinned `chat_id` in `settings/telegram.yaml`, the gateway
 auto-binds to the first chat that messages the bot. To pick the ID first:
