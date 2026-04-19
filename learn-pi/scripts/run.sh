@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Launch pi with the model pinned to openrouter/elephant-alpha.
+# Launch pi with the model pinned to google/gemini-3.1-flash-lite-preview
+# routed via OpenRouter.
 #
 # pi-mono's saved-default resolver requires models to exist in pi-ai's static
-# registry; cloaked OpenRouter releases like elephant-alpha do not, so we have
-# to pass --model on the CLI where the "custom model id" fallback kicks in.
+# registry; preview/cloaked OpenRouter models do not, so we have to pass
+# --provider + --model on the CLI where the "custom model id" fallback kicks
+# in. The slug contains a slash, so we pass --provider explicitly rather than
+# relying on --model's provider/id parse (which would split at the first
+# slash and treat "google" as the provider).
 #
 # The learn-pi extensions (`learn-loop.ts`, `telegram-gateway.ts`) derive the
 # vault path from pi-mono's `ctx.cwd`, so you run this script from inside the
@@ -30,4 +34,4 @@ if [[ -z "${LEARN_PI_TELEGRAM_TOKEN:-}" ]]; then
   echo "warn: LEARN_PI_TELEGRAM_TOKEN not set — telegram-gateway will no-op" >&2
 fi
 
-exec pi --model openrouter/elephant-alpha "$@"
+exec pi --provider openrouter --model google/gemini-3.1-flash-lite-preview "$@"

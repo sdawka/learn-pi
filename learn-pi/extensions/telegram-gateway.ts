@@ -143,7 +143,13 @@ export default function telegramGateway(pi: ExtensionAPI): void {
               .map((p: any) => p.text)
               .join("\n")
           : "";
-      if (!text || text === lastAssistantSent) return;
+      // Skip empty assistant entries (tool-only messages, empty wraps after
+      // tool-calls, flaky model returning zero-token content). Walk back to
+      // find the most recent assistant entry that actually has text.
+      if (!text) continue;
+      // Dedup against what we already sent — if it matches, we've forwarded
+      // this turn's text already on a prior agent_end, so stop walking.
+      if (text === lastAssistantSent) return;
       lastAssistantSent = text;
       try {
         await tg(token, "sendMessage", { chat_id: boundChatId, text });
